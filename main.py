@@ -331,23 +331,33 @@ class BalancerStrategy:
         
         equity = float(account_info["totalWalletBalance"])
         
+        # Get existing positions
+        existing_positions = {
+            pos["symbol"]: float(pos["positionAmt"])
+            for pos in account_info["positions"]
+            if abs(float(pos["positionAmt"])) > 0
+        }
+        
         for symbol, allocation in self.config["ALLOCATION"].items():
+            # Skip if position already exists
+            if symbol in existing_positions:
+                logging.info(f"Position already exists for {symbol}, size: {existing_positions[symbol]}")
+                continue
+                
             allocated_amount = equity * allocation
             
-            # Get symbol-specific minimum notional
             symbol_info = self.state["symbol_info"].get(symbol, {})
             if not symbol_info:
                 logging.error(f"No symbol info for {symbol}")
                 continue
             
             filters = {f["filterType"]: f for f in symbol_info.get("filters", [])}
-            min_notional = float(filters.get("MIN_NOTIONAL", {}).get("notional", 5))  # Default to 5 if not found
+            min_notional = float(filters.get("MIN_NOTIONAL", {}).get("notional", 5))
             
             if allocated_amount < min_notional:
                 logging.error(f"Allocated amount for {symbol} (${allocated_amount:.2f}) is below minimum notional (${min_notional})")
                 continue
             
-            # Calculate and place order if above minimum notional
             try:
                 price = float(self.binance.get_symbol_price(symbol))
                 quantity = allocated_amount / price
@@ -492,7 +502,8 @@ class BalancerStrategy:
             for symbol, pos in positions.items():
                 size = float(pos["positionAmt"])
                 upnl = float(pos["unrealizedProfit"])
-                print(f"{symbol}: {size:.4f} (PnL: ${upnl:.2f})")
+                notional = float(pos["notional"])
+                print(f"{symbol}: {size:.4f} (Notional: ${notional:.2f}, PnL: ${upnl:.2f})")
         else:
             print("No active positions")
 
