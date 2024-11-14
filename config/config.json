@@ -1,0 +1,12 @@
+{
+  "EXCHANGE": "binance",
+  "BASE_CAPITAL": 100,
+  "ALLOCATION": {
+    "BTCUSDT": 0.4,
+    "ETHUSDT": 0.3,
+    "BNBUSDT": 0.3
+  },
+  "PROFIT_THRESHOLD": 0.02,
+  "UPDATE_INTERVAL": 2,
+  "LOG_LEVEL": "DEBUG"
+} 
