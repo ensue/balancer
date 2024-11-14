@@ -9,6 +9,7 @@ from pathlib import Path
 from importlib.util import find_spec
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
+from dotenv import load_dotenv
 
 def setup_logger(config):
     """Configure logging based on config settings"""
@@ -58,6 +59,16 @@ class BinanceClient:
         self.client = Client(api_key, api_secret)
         self.symbol_info = {}
         self.last_symbol_info_update = 0
+        self.sync_server_time()
+
+    def sync_server_time(self):
+        try:
+            server_time = self.client.get_server_time()
+            diff_time = server_time['serverTime'] - int(time.time() * 1000)
+            self.client.timestamp_offset = diff_time
+            logging.info(f"Time synchronized. Offset: {diff_time} ms")
+        except BinanceAPIException as e:
+            logging.error(f"Failed to synchronize time: {e}")
 
     def fetch_symbol_info(self):
         """Fetch and cache symbol information for futures market"""
@@ -115,14 +126,34 @@ class BinanceClient:
 class BalancerStrategy:
     """Main strategy class implementing the balancing logic"""
     def __init__(self):
-        load_dotenv('config/.env')
+        self.project_root = Path(__file__).parent
+        env_path = self.project_root / 'config' / '.env'
+        
+        if not env_path.exists():
+            print(f"\n{Colors.YELLOW}Plik .env nie został znaleziony w {env_path}{Colors.RESET}")
+            print(f"{Colors.CYAN}Proszę wprowadzić klucze API Binance:{Colors.RESET}\n")
+            
+            api_key = input("API Key: ").strip()
+            api_secret = input("API Secret: ").strip()
+            
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(env_path, 'w') as f:
+                f.write(f"API_KEY={api_key}\nAPI_SECRET={api_secret}")
+            
+            print(f"\n{Colors.GREEN}Klucze zostały zapisane w {env_path}{Colors.RESET}\n")
+        
+        load_dotenv(env_path)
+        logging.debug(f"Project root directory: {self.project_root}")
+        logging.debug(f"Env file exists: {env_path.exists()}")
+        
         self.api_key = os.getenv('API_KEY')
         self.api_secret = os.getenv('API_SECRET')
         
         if not self.api_key or not self.api_secret:
-            raise ValueError("API credentials not found in config/.env")
+            raise ValueError(f"API credentials not found in {env_path}")
             
-        with open('config/config.json', 'r') as f:
+        config_path = self.project_root / 'config' / 'config.json'
+        with open(config_path, 'r') as f:
             self.config = json.load(f)
         setup_logger(self.config)
         
