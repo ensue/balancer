@@ -63,12 +63,19 @@ class BinanceClient:
 
     def sync_server_time(self):
         try:
+            print("Synchronizuję czas z serwerem Binance...")
             server_time = self.client.get_server_time()
             diff_time = server_time['serverTime'] - int(time.time() * 1000)
             self.client.timestamp_offset = diff_time
-            logging.info(f"Time synchronized. Offset: {diff_time} ms")
+            print(f"Czas zsynchronizowany. Offset: {diff_time} ms")
         except BinanceAPIException as e:
-            logging.error(f"Failed to synchronize time: {e}")
+            print(f"Błąd podczas synchronizacji czasu: {str(e)}")
+            logging.error(f"Błąd podczas synchronizacji czasu: {str(e)}")
+            raise
+        except Exception as e:
+            print(f"Nieoczekiwany błąd podczas synchronizacji czasu: {str(e)}")
+            logging.error(f"Nieoczekiwany błąd podczas synchronizacji czasu: {str(e)}")
+            raise
 
     def fetch_symbol_info(self):
         """Fetch and cache symbol information for futures market"""
@@ -88,16 +95,19 @@ class BinanceClient:
     def fetch_account_info(self):
         """Fetch futures account information"""
         try:
-            return self.client.futures_account()
+            print("Pobieram informacje o koncie...")
+            account = self.client.futures_account()
+            print(f"Pobrano informacje o koncie. Saldo: {account.get('totalWalletBalance', 'N/A')} USDT")
+            return account
         except BinanceAPIException as e:
+            print(f"Błąd podczas pobierania informacji o koncie: {str(e)}")
             logging.error(f"Failed to fetch account information: {e}")
             return None
 
     def fetch_positions(self):
         """Fetch current futures positions"""
         try:
-            account = self.client.futures_account()
-            return [pos for pos in account['positions'] if float(pos['positionAmt']) != 0]
+            return self.client.futures_account()['positions']
         except BinanceAPIException as e:
             logging.error(f"Failed to fetch positions: {e}")
             return []
@@ -126,40 +136,62 @@ class BinanceClient:
 class BalancerStrategy:
     """Main strategy class implementing the balancing logic"""
     def __init__(self):
-        self.project_root = Path(__file__).parent
-        env_path = self.project_root / 'config' / '.env'
-        
-        if not env_path.exists():
-            print(f"\n{Colors.YELLOW}Plik .env nie został znaleziony w {env_path}{Colors.RESET}")
-            print(f"{Colors.CYAN}Proszę wprowadzić klucze API Binance:{Colors.RESET}\n")
+        try:
+            logging.info("Inicjalizacja BalancerStrategy...")
+            self.project_root = Path(__file__).parent
+            logging.info(f"Ścieżka projektu: {self.project_root}")
             
-            api_key = input("API Key: ").strip()
-            api_secret = input("API Secret: ").strip()
+            env_path = self.project_root / 'config' / '.env'
+            logging.info(f"Szukam pliku .env w: {env_path}")
             
-            env_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(env_path, 'w') as f:
-                f.write(f"API_KEY={api_key}\nAPI_SECRET={api_secret}")
+            if not env_path.exists():
+                logging.info("Plik .env nie istnieje - tworzę nowy...")
+                print(f"\n{Colors.YELLOW}Plik .env nie został znaleziony w {env_path}{Colors.RESET}")
+                print(f"{Colors.CYAN}Proszę wprowadzić klucze API Binance:{Colors.RESET}\n")
+                
+                api_key = input("API Key: ").strip()
+                api_secret = input("API Secret: ").strip()
+                
+                env_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(env_path, 'w') as f:
+                    f.write(f"API_KEY={api_key}\nAPI_SECRET={api_secret}")
+                
+                print(f"\n{Colors.GREEN}Klucze zostały zapisane w {env_path}{Colors.RESET}\n")
             
-            print(f"\n{Colors.GREEN}Klucze zostały zapisane w {env_path}{Colors.RESET}\n")
-        
-        load_dotenv(env_path)
-        logging.debug(f"Project root directory: {self.project_root}")
-        logging.debug(f"Env file exists: {env_path.exists()}")
-        
-        self.api_key = os.getenv('API_KEY')
-        self.api_secret = os.getenv('API_SECRET')
-        
-        if not self.api_key or not self.api_secret:
-            raise ValueError(f"API credentials not found in {env_path}")
+            load_dotenv(env_path)
+            logging.info("Załadowano zmienne środowiskowe")
             
-        config_path = self.project_root / 'config' / 'config.json'
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
-        setup_logger(self.config)
-        
-        self.binance = BinanceClient(self.api_key, self.api_secret)
-        self.cache = CacheManager('state')
-        self.state = self.initialize_state()
+            self.api_key = os.getenv('API_KEY')
+            self.api_secret = os.getenv('API_SECRET')
+            
+            if not self.api_key or not self.api_secret:
+                raise ValueError(f"Nie znaleziono poświadczeń API w {env_path}")
+            
+            config_path = self.project_root / 'config' / 'config.json'
+            logging.info(f"Wczytuję konfigurację z: {config_path}")
+            
+            if not config_path.exists():
+                raise FileNotFoundError(f"Nie znaleziono pliku konfiguracyjnego: {config_path}")
+            
+            with open(config_path, 'r') as f:
+                self.config = json.load(f)
+            logging.info("Załadowano konfigurację")
+            
+            setup_logger(self.config)
+            logging.info("Skonfigurowano logger")
+            
+            self.binance = BinanceClient(self.api_key, self.api_secret)
+            logging.info("Zainicjalizowano klienta Binance")
+            
+            self.cache = CacheManager('state')
+            logging.info("Zainicjalizowano CacheManager")
+            
+            self.state = self.initialize_state()
+            logging.info("Zainicjalizowano stan")
+            
+        except Exception as e:
+            logging.error(f"Błąd podczas inicjalizacji: {str(e)}")
+            raise
 
     def initialize_state(self):
         """Initialize or load existing state"""
@@ -360,10 +392,12 @@ class BalancerStrategy:
 
     def display_status(self):
         """Display current strategy status"""
+        print("\nPobieram aktualny stan konta...")
         account_info = self.binance.fetch_account_info()
         if not account_info:
+            print("Nie udało się pobrać informacji o koncie!")
             return
-            
+        
         equity = float(account_info["totalWalletBalance"])
         positions = {
             pos["symbol"]: pos 
@@ -371,54 +405,54 @@ class BalancerStrategy:
             if float(pos["positionAmt"]) != 0
         }
         
-        logging.info("\n" + "="*100)
-        logging.info(f"Equity: {Colors.colorize(f'${equity:.2f}', Colors.CYAN)}")
-        logging.info("\nPosition Details:")
+        print(f"\n{'='*50}")
+        print(f"Stan konta: ${equity:.2f}")
+        print(f"Liczba aktywnych pozycji: {len(positions)}")
+        print(f"{'='*50}\n")
         
-        header = (
-            f"{'Symbol':<8} | {'Size':>10} | {'Allocation':>9} | {'Target %':>8} | "
-            f"{'Current %':>9} | {'Realized PnL':>12} | {'Unrealized PnL':>14} | {'Hedge Size':>10}"
-        )
-        logging.info("-"*100)
-        logging.info(header)
-        logging.info("-"*100)
-        
-        for symbol, allocation in self.config["ALLOCATION"].items():
-            pos = positions.get(symbol, {})
-            current_notional = float(pos.get("notional", 0))
-            current_allocation = current_notional / equity if equity > 0 else 0
-            upnl = float(pos.get("unrealizedProfit", 0))
-            rpnl = float(pos.get("realizedProfit", 0))
-            size = float(pos.get("positionAmt", 0))
-            
-            hedge_positions = [
-                p for p in account_info["positions"]
-                if p["symbol"] == symbol and float(p["positionAmt"]) * size < 0
-            ]
-            hedge_size = abs(float(hedge_positions[0]["positionAmt"])) if hedge_positions else 0
-            
-            logging.info(
-                f"{symbol:<8} | {size:>10.4f} | "
-                f"{Colors.colorize(f'{current_allocation*100:>8.1f}%', Colors.by_value(current_allocation-allocation))} | "
-                f"{allocation*100:>7.1f}% | "
-                f"{current_allocation*100:>8.1f}% | "
-                f"{Colors.colorize(f'${rpnl:>11.2f}', Colors.by_value(rpnl))} | "
-                f"{Colors.colorize(f'${upnl:>13.2f}', Colors.by_value(upnl))} | "
-                f"{hedge_size:>10.4f}"
-            )
+        if positions:
+            print("Aktywne pozycje:")
+            for symbol, pos in positions.items():
+                size = float(pos["positionAmt"])
+                upnl = float(pos["unrealizedProfit"])
+                print(f"{symbol}: {size:.4f} (PnL: ${upnl:.2f})")
+        else:
+            print("Brak aktywnych pozycji")
 
     def run(self):
         """Main strategy loop"""
-        while True:
-            try:
-                self.update_symbol_info(self.state)
-                self.calculate_position_sizes()
-                self.display_status()
-                self.cache.save(self.state)
-                time.sleep(self.config["UPDATE_INTERVAL"])
-            except Exception as e:
-                logging.error(f"Error in main loop: {e}")
-                time.sleep(5)
+        print("Rozpoczynam główną pętlę strategii...")
+        try:
+            print("Aktualizuję informacje o symbolach...")
+            self.update_symbol_info(self.state)
+            
+            print("Obliczam rozmiary pozycji...")
+            self.calculate_position_sizes()
+            
+            print("Wyświetlam status...")
+            self.display_status()
+            
+            print("Zapisuję stan...")
+            self.cache.save(self.state)
+            
+            print("Pierwszy cykl zakończony, przechodzę do pętli głównej...")
+            
+            while True:
+                try:
+                    self.update_symbol_info(self.state)
+                    self.calculate_position_sizes()
+                    self.display_status()
+                    self.cache.save(self.state)
+                    print(f"Czekam {self.config['UPDATE_INTERVAL']} sekund...")
+                    time.sleep(self.config["UPDATE_INTERVAL"])
+                except Exception as e:
+                    print(f"Błąd w głównej pętli: {str(e)}")
+                    logging.error(f"Błąd w głównej pętli: {str(e)}", exc_info=True)
+                    time.sleep(5)
+        except Exception as e:
+            print(f"Błąd krytyczny w run(): {str(e)}")
+            logging.error(f"Błąd krytyczny w run(): {str(e)}", exc_info=True)
+            raise
 
 def install_requirements():
     """Install required packages if not present"""
@@ -437,6 +471,14 @@ def install_requirements():
                 sys.exit(1)
 
 if __name__ == "__main__":
+    print("Rozpoczynam inicjalizację...")
     install_requirements()
-    strategy = BalancerStrategy()
-    strategy.run() 
+    print("Pakiety zainstalowane, tworzę instancję BalancerStrategy...")
+    try:
+        strategy = BalancerStrategy()
+        print("Instancja utworzona, uruchamiam strategię...")
+        strategy.run()
+    except Exception as e:
+        print(f"Błąd krytyczny: {str(e)}")
+        logging.error(f"Błąd krytyczny: {str(e)}", exc_info=True)
+        sys.exit(1) 
