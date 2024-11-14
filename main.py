@@ -324,46 +324,60 @@ class BalancerStrategy:
             logging.warning("Allocation warnings:\n" + "\n".join(warnings))
 
     def calculate_position_sizes(self):
-        """Calculate and adjust position sizes based on allocation config"""
+        """Calculate position sizes based on allocation"""
         account_info = self.binance.fetch_account_info()
         if not account_info:
-            return
-        
-        equity = float(account_info["totalWalletBalance"])
-        
-        # Get existing positions
-        existing_positions = {
-            pos["symbol"]: float(pos["positionAmt"])
-            for pos in account_info["positions"]
-            if abs(float(pos["positionAmt"])) > 0
-        }
+            return None
+
+        base_capital = max(self.config["BASE_CAPITAL"], 25)  # Minimum 25 USDT total to meet 5 USDT per position
+        positions = {}
         
         for symbol, allocation in self.config["ALLOCATION"].items():
-            # Skip if position already exists
-            if symbol in existing_positions:
-                logging.info(f"Position already exists for {symbol}, size: {existing_positions[symbol]}")
+            position_value = base_capital * allocation
+            # Upewnij się, że wartość pozycji jest co najmniej 5 USDT
+            if position_value < 5:
+                logging.warning(f"Skipping {symbol} - position value {position_value:.2f} USDT is below minimum 5 USDT")
                 continue
+            
+            price = self.binance.get_symbol_price(symbol)
+            if price:
+                size = position_value / price
+                positions[symbol] = self.binance._format_quantity(symbol, size)
+        
+        self.execute_positions(positions)
+        return positions
+
+    def execute_positions(self, target_positions):
+        """Execute orders to achieve target positions"""
+        current_positions = {
+            pos["symbol"]: float(pos["positionAmt"])
+            for pos in self.binance.fetch_positions()
+            if float(pos["positionAmt"]) != 0
+        }
+        
+        for symbol, target_size in target_positions.items():
+            current_size = current_positions.get(symbol, 0)
+            size_diff = target_size - current_size
+            
+            if abs(size_diff) > 0:
+                # Sprawdź minimalną wartość zlecenia
+                price = self.binance.get_symbol_price(symbol)
+                order_value = abs(size_diff) * price
                 
-            allocated_amount = equity * allocation
-            
-            symbol_info = self.state["symbol_info"].get(symbol, {})
-            if not symbol_info:
-                logging.error(f"No symbol info for {symbol}")
-                continue
-            
-            filters = {f["filterType"]: f for f in symbol_info.get("filters", [])}
-            min_notional = float(filters.get("MIN_NOTIONAL", {}).get("notional", 5))
-            
-            if allocated_amount < min_notional:
-                logging.error(f"Allocated amount for {symbol} (${allocated_amount:.2f}) is below minimum notional (${min_notional})")
-                continue
-            
-            try:
-                price = float(self.binance.get_symbol_price(symbol))
-                quantity = allocated_amount / price
-                self.binance.create_order(symbol, "BUY", quantity)
-            except Exception as e:
-                logging.error(f"Error opening position for {symbol}: {e}")
+                if order_value < 5:
+                    logging.warning(f"Skipping {symbol} order - value {order_value:.2f} USDT is below minimum 5 USDT")
+                    continue
+                
+                side = "BUY" if size_diff > 0 else "SELL"
+                try:
+                    self.binance.create_order(
+                        symbol=symbol,
+                        side=side,
+                        quantity=abs(size_diff)
+                    )
+                    logging.info(f"Executed {side} order for {symbol}: {abs(size_diff)} units")
+                except Exception as e:
+                    logging.error(f"Failed to execute order for {symbol}: {str(e)}")
 
     def place_hedge_position(self, symbol, position, equity):
         """Place hedge order for a position"""
