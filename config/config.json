@@ -1,6 +1,6 @@
 {
   "EXCHANGE": "binance",
-  "BASE_CAPITAL": 100,
+  "BASE_CAPITAL": 50,
   "ALLOCATION": {
     "BTCUSDT": 0.4,
     "ETHUSDT": 0.3,

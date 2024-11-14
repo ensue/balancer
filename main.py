@@ -133,6 +133,47 @@ class BinanceClient:
             logging.error(f"Failed to create order: {e}")
             return None
 
+    def create_order(self, symbol: str, side: str, quantity: float, order_type: str = "MARKET"):
+        """Create a new order"""
+        try:
+            print(f"Tworzę zlecenie: {symbol} {side} {quantity} {order_type}")
+            order = self.client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type=order_type,
+                quantity=self._format_quantity(symbol, quantity)
+            )
+            print(f"Zlecenie utworzone: {order}")
+            return order
+        except BinanceAPIException as e:
+            print(f"Błąd Binance API podczas tworzenia zlecenia: {str(e)}")
+            raise
+        except Exception as e:
+            print(f"Nieoczekiwany błąd podczas tworzenia zlecenia: {str(e)}")
+            raise
+
+    def _format_quantity(self, symbol: str, quantity: float) -> float:
+        """Format quantity according to symbol's precision"""
+        info = self.client.futures_exchange_info()
+        symbol_info = next(
+            (s for s in info['symbols'] if s['symbol'] == symbol),
+            None
+        )
+        if not symbol_info:
+            raise ValueError(f"Symbol {symbol} nie znaleziony")
+        
+        precision = int(symbol_info['quantityPrecision'])
+        return round(quantity, precision)
+
+    def get_symbol_price(self, symbol: str) -> float:
+        """Get current price for symbol"""
+        try:
+            ticker = self.client.futures_symbol_ticker(symbol=symbol)
+            return float(ticker['price'])
+        except Exception as e:
+            print(f"Błąd podczas pobierania ceny dla {symbol}: {str(e)}")
+            raise
+
 class BalancerStrategy:
     """Main strategy class implementing the balancing logic"""
     def __init__(self):
@@ -249,34 +290,65 @@ class BalancerStrategy:
             logging.warning("Allocation warnings:\n" + "\n".join(warnings))
 
     def calculate_position_sizes(self):
-        """Calculate and adjust position sizes based on profit threshold"""
+        """Calculate and adjust position sizes based on allocation config"""
+        logging.info("Checking positions...")
         account_info = self.binance.fetch_account_info()
         if not account_info:
+            logging.error("Failed to fetch account information")
             return
-            
+        
         equity = float(account_info["totalWalletBalance"])
+        logging.info(f"Current balance: ${equity:.2f}")
+        
         current_positions = {
             pos["symbol"]: {
                 "size": float(pos["positionAmt"]),
                 "notional": float(pos["notional"]),
-                "unrealizedProfit": float(pos["unrealizedProfit"]),
-                "realizedProfit": float(pos.get("realizedProfit", 0))
+                "unrealizedProfit": float(pos["unrealizedProfit"])
             }
             for pos in account_info["positions"]
             if float(pos["positionAmt"]) != 0
         }
         
-        for symbol, allocation in self.config["ALLOCATION"].items():
-            target_notional = equity * allocation
-            current_pos = current_positions.get(symbol, {
-                "notional": 0, 
-                "unrealizedProfit": 0, 
-                "size": 0,
-                "realizedProfit": 0
-            })
-            
-            if abs(current_pos["unrealizedProfit"]) / equity > self.config["PROFIT_THRESHOLD"]:
-                self.place_hedge_position(symbol, current_pos, equity)
+        logging.info(f"Found {len(current_positions)} active positions")
+        
+        if not current_positions:
+            logging.info("No active positions. Initializing allocations according to config...")
+            for symbol, allocation in self.config["ALLOCATION"].items():
+                try:
+                    target_notional = equity * allocation
+                    current_price = float(self.binance.get_symbol_price(symbol))
+                    target_size = target_notional / current_price
+                    
+                    logging.info(f"Opening position for {symbol}:")
+                    logging.debug(f"Allocation: {allocation*100}%")
+                    logging.debug(f"Amount: ${target_notional:.2f}")
+                    logging.debug(f"Size: {target_size:.6f}")
+                    
+                    order = self.binance.create_order(
+                        symbol=symbol,
+                        side="BUY",
+                        quantity=target_size,
+                        order_type="MARKET"
+                    )
+                    logging.info(f"Order executed: {order['orderId']}")
+                    
+                except Exception as e:
+                    logging.error(f"Error opening position for {symbol}: {str(e)}")
+        else:
+            logging.info("Checking existing positions...")
+            for symbol, allocation in self.config["ALLOCATION"].items():
+                target_notional = equity * allocation
+                current_pos = current_positions.get(symbol, {
+                    "notional": 0, 
+                    "unrealizedProfit": 0, 
+                    "size": 0
+                })
+                
+                logging.debug(f"Checking {symbol}:")
+                logging.debug(f"Target value: ${target_notional:.2f}")
+                logging.debug(f"Current value: ${current_pos['notional']:.2f}")
+                logging.debug(f"Unrealized PnL: ${current_pos['unrealizedProfit']:.2f}")
 
     def place_hedge_position(self, symbol, position, equity):
         """Place hedge order for a position"""
