@@ -506,20 +506,40 @@ class BalancerStrategy:
             if float(pos["positionAmt"]) != 0
         }
         
-        print(f"\n{'='*50}")
-        print(f"Account balance: ${equity:.2f}")
-        print(f"Active positions: {len(positions)}")
-        print(f"{'='*50}\n")
+        total_notional = sum(float(pos["notional"]) for pos in positions.values())
+        total_hedge = sum(abs(float(pos["positionAmt"])) * float(pos["entryPrice"]) for pos in positions.values())
+        
+        print(f"\n{'='*85}")
+        print(f"Account Balance: ${equity:.2f}    Total Positions: {len(positions)}    Total Notional: ${total_notional:.2f}")
+        print(f"Total Hedge Value: ${total_hedge:.2f}")
+        print(f"{'='*85}")
         
         if positions:
-            print("Active positions:")
+            headers = ["Symbol", "Size", "Notional $", "Hedge $", "Allocation %"]
+            row_format = "│ {:<12} │ {:>10} │ {:>10} │ {:>8} │ {:>15} │"
+            separator = "├" + "─"*14 + "┼" + "─"*12 + "┼" + "─"*12 + "┼" + "─"*10 + "┼" + "─"*17 + "┤"
+            
+            print("┌" + "─"*14 + "┬" + "─"*12 + "┬" + "─"*12 + "┬" + "─"*10 + "┬" + "─"*17 + "┐")
+            print(row_format.format(*headers))
+            print(separator)
+            
             for symbol, pos in positions.items():
                 size = float(pos["positionAmt"])
-                upnl = float(pos["unrealizedProfit"])
                 notional = float(pos["notional"])
-                print(f"{symbol}: {size:.4f} (Notional: ${notional:.2f}, PnL: ${upnl:.2f})")
+                hedge_value = abs(size) * float(pos["entryPrice"])
+                allocation = (notional / total_notional * 100) if total_notional > 0 else 0
+                
+                print(row_format.format(
+                    symbol,
+                    f"{size:.4f}",
+                    f"{notional:.2f}",
+                    f"{hedge_value:.2f}",
+                    f"{allocation:.1f}%"
+                ))
+            
+            print("└" + "─"*14 + "┴" + "─"*12 + "┴" + "─"*12 + "┴" + "─"*10 + "┴" + "─"*17 + "┘")
         else:
-            print("No active positions")
+            print("\nNo active positions")
 
     def run(self):
         """Main strategy loop"""

@@ -1,10 +1,10 @@
 {
   "EXCHANGE": "binance",
-  "BASE_CAPITAL": 50,
+  "BASE_CAPITAL": 100,
   "ALLOCATION": {
     "DOGEUSDT": 0.2,
     "ACTUSDT": 0.2,
-    "BNBUSDT": 0.2,
+    "FTMUSDT": 0.2,
     "1000PEPEUSDT": 0.2,
     "PNUTUSDT": 0.2
   },
