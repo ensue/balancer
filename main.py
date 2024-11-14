@@ -136,20 +136,21 @@ class BinanceClient:
     def create_order(self, symbol: str, side: str, quantity: float, order_type: str = "MARKET"):
         """Create a new order"""
         try:
-            print(f"Tworzę zlecenie: {symbol} {side} {quantity} {order_type}")
+            print(f"Creating order: {symbol} {side} {quantity} {order_type}")
             order = self.client.futures_create_order(
                 symbol=symbol,
                 side=side,
                 type=order_type,
-                quantity=self._format_quantity(symbol, quantity)
+                quantity=self._format_quantity(symbol, quantity),
+                positionSide='BOTH'
             )
-            print(f"Zlecenie utworzone: {order}")
+            print(f"Order created: {order}")
             return order
         except BinanceAPIException as e:
-            print(f"Błąd Binance API podczas tworzenia zlecenia: {str(e)}")
+            print(f"Binance API error while creating order: {str(e)}")
             raise
         except Exception as e:
-            print(f"Nieoczekiwany błąd podczas tworzenia zlecenia: {str(e)}")
+            print(f"Unexpected error while creating order: {str(e)}")
             raise
 
     def _format_quantity(self, symbol: str, quantity: float) -> float:
@@ -298,6 +299,12 @@ class BalancerStrategy:
             return
         
         equity = float(account_info["totalWalletBalance"])
+        min_notional = 100
+        
+        if equity < min_notional:
+            logging.error(f"Insufficient capital. Minimum required: ${min_notional}, available: ${equity:.2f}")
+            return
+        
         logging.info(f"Current balance: ${equity:.2f}")
         
         current_positions = {
