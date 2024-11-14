@@ -59,22 +59,30 @@ class BinanceClient:
         self.client = Client(api_key, api_secret)
         self.symbol_info = {}
         self.last_symbol_info_update = 0
+        
+        # Set position mode to one-way
+        try:
+            self.client.futures_change_position_mode(dualSidePosition=False)
+        except BinanceAPIException as e:
+            if e.code != -4059:  # Already in one-way mode
+                raise
+        
         self.sync_server_time()
 
     def sync_server_time(self):
         try:
-            print("Synchronizuję czas z serwerem Binance...")
+            print("Synchronizing time with Binance server...")
             server_time = self.client.get_server_time()
             diff_time = server_time['serverTime'] - int(time.time() * 1000)
             self.client.timestamp_offset = diff_time
-            print(f"Czas zsynchronizowany. Offset: {diff_time} ms")
+            print(f"Time synchronized. Offset: {diff_time} ms")
         except BinanceAPIException as e:
-            print(f"Błąd podczas synchronizacji czasu: {str(e)}")
-            logging.error(f"Błąd podczas synchronizacji czasu: {str(e)}")
+            print(f"Error synchronizing time: {str(e)}")
+            logging.error(f"Error synchronizing time: {str(e)}")
             raise
         except Exception as e:
-            print(f"Nieoczekiwany błąd podczas synchronizacji czasu: {str(e)}")
-            logging.error(f"Nieoczekiwany błąd podczas synchronizacji czasu: {str(e)}")
+            print(f"Unexpected error during time sync: {str(e)}")
+            logging.error(f"Unexpected error during time sync: {str(e)}")
             raise
 
     def fetch_symbol_info(self):
@@ -95,12 +103,12 @@ class BinanceClient:
     def fetch_account_info(self):
         """Fetch futures account information"""
         try:
-            print("Pobieram informacje o koncie...")
+            print("Fetching account information...")
             account = self.client.futures_account()
-            print(f"Pobrano informacje o koncie. Saldo: {account.get('totalWalletBalance', 'N/A')} USDT")
+            print(f"Account information fetched. Balance: {account.get('totalWalletBalance', 'N/A')} USDT")
             return account
         except BinanceAPIException as e:
-            print(f"Błąd podczas pobierania informacji o koncie: {str(e)}")
+            print(f"Error fetching account information: {str(e)}")
             logging.error(f"Failed to fetch account information: {e}")
             return None
 
@@ -136,15 +144,18 @@ class BinanceClient:
     def create_order(self, symbol: str, side: str, quantity: float, order_type: str = "MARKET"):
         """Create a new order"""
         try:
-            print(f"Creating order: {symbol} {side} {quantity} {order_type}")
+            formatted_qty = self._format_quantity(symbol, quantity)
+            if formatted_qty <= 0:
+                raise ValueError(f"Invalid quantity: {formatted_qty}")
+            
+            print(f"Creating order: {symbol} {side} {formatted_qty} {order_type}")
             order = self.client.futures_create_order(
                 symbol=symbol,
                 side=side,
                 type=order_type,
-                quantity=self._format_quantity(symbol, quantity),
-                positionSide='BOTH'
+                quantity=formatted_qty
             )
-            print(f"Order created: {order}")
+            print("Order created successfully")
             return order
         except BinanceAPIException as e:
             print(f"Binance API error while creating order: {str(e)}")
@@ -155,16 +166,38 @@ class BinanceClient:
 
     def _format_quantity(self, symbol: str, quantity: float) -> float:
         """Format quantity according to symbol's precision"""
-        info = self.client.futures_exchange_info()
-        symbol_info = next(
-            (s for s in info['symbols'] if s['symbol'] == symbol),
-            None
-        )
+        symbol_info = self.symbol_info.get(symbol)
         if not symbol_info:
-            raise ValueError(f"Symbol {symbol} nie znaleziony")
+            self.fetch_symbol_info()
+            symbol_info = self.symbol_info.get(symbol)
+            if not symbol_info:
+                raise ValueError(f"Symbol {symbol} not found")
         
-        precision = int(symbol_info['quantityPrecision'])
-        return round(quantity, precision)
+        filters = {f["filterType"]: f for f in symbol_info.get("filters", [])}
+        lot_size = filters.get("LOT_SIZE", {})
+        
+        min_qty = float(lot_size.get("minQty", 0))
+        step_size = float(lot_size.get("stepSize", 0))
+        
+        if quantity < min_qty:
+            logging.error(f"Quantity {quantity} below minimum {min_qty} for {symbol}")
+            return 0
+        
+        # Calculate precision from stepSize
+        precision = 0
+        if step_size < 1:
+            precision = len(str(step_size).split(".")[-1].rstrip('0'))
+        
+        # Round to the correct precision and ensure it's a multiple of stepSize
+        formatted_qty = float(int(quantity / step_size) * step_size)
+        formatted_qty = round(formatted_qty, precision)
+        
+        # Ensure quantity is not zero after rounding
+        if formatted_qty <= 0:
+            logging.error(f"Quantity {quantity} rounded to zero for {symbol}")
+            return 0
+        
+        return formatted_qty
 
     def get_symbol_price(self, symbol: str) -> float:
         """Get current price for symbol"""
@@ -172,24 +205,24 @@ class BinanceClient:
             ticker = self.client.futures_symbol_ticker(symbol=symbol)
             return float(ticker['price'])
         except Exception as e:
-            print(f"Błąd podczas pobierania ceny dla {symbol}: {str(e)}")
+            print(f"Error fetching price for {symbol}: {str(e)}")
             raise
 
 class BalancerStrategy:
     """Main strategy class implementing the balancing logic"""
     def __init__(self):
         try:
-            logging.info("Inicjalizacja BalancerStrategy...")
+            logging.info("Initializing BalancerStrategy...")
             self.project_root = Path(__file__).parent
-            logging.info(f"Ścieżka projektu: {self.project_root}")
+            logging.info(f"Project path: {self.project_root}")
             
             env_path = self.project_root / 'config' / '.env'
-            logging.info(f"Szukam pliku .env w: {env_path}")
+            logging.info(f"Looking for .env file in: {env_path}")
             
             if not env_path.exists():
-                logging.info("Plik .env nie istnieje - tworzę nowy...")
-                print(f"\n{Colors.YELLOW}Plik .env nie został znaleziony w {env_path}{Colors.RESET}")
-                print(f"{Colors.CYAN}Proszę wprowadzić klucze API Binance:{Colors.RESET}\n")
+                logging.info("Creating new .env file...")
+                print(f"\n{Colors.YELLOW}.env file not found in {env_path}{Colors.RESET}")
+                print(f"{Colors.CYAN}Please enter your Binance API keys:{Colors.RESET}\n")
                 
                 api_key = input("API Key: ").strip()
                 api_secret = input("API Secret: ").strip()
@@ -198,41 +231,41 @@ class BalancerStrategy:
                 with open(env_path, 'w') as f:
                     f.write(f"API_KEY={api_key}\nAPI_SECRET={api_secret}")
                 
-                print(f"\n{Colors.GREEN}Klucze zostały zapisane w {env_path}{Colors.RESET}\n")
+                print(f"\n{Colors.GREEN}Keys have been saved to {env_path}{Colors.RESET}\n")
             
             load_dotenv(env_path)
-            logging.info("Załadowano zmienne środowiskowe")
+            logging.info("Environment variables loaded")
             
             self.api_key = os.getenv('API_KEY')
             self.api_secret = os.getenv('API_SECRET')
             
             if not self.api_key or not self.api_secret:
-                raise ValueError(f"Nie znaleziono poświadczeń API w {env_path}")
+                raise ValueError(f"API credentials not found in {env_path}")
             
             config_path = self.project_root / 'config' / 'config.json'
-            logging.info(f"Wczytuję konfigurację z: {config_path}")
+            logging.info(f"Loading configuration from: {config_path}")
             
             if not config_path.exists():
-                raise FileNotFoundError(f"Nie znaleziono pliku konfiguracyjnego: {config_path}")
+                raise FileNotFoundError(f"Configuration file not found: {config_path}")
             
             with open(config_path, 'r') as f:
                 self.config = json.load(f)
-            logging.info("Załadowano konfigurację")
+            logging.info("Configuration loaded")
             
             setup_logger(self.config)
-            logging.info("Skonfigurowano logger")
+            logging.info("Logger configured")
             
             self.binance = BinanceClient(self.api_key, self.api_secret)
-            logging.info("Zainicjalizowano klienta Binance")
+            logging.info("Binance client initialized")
             
             self.cache = CacheManager('state')
-            logging.info("Zainicjalizowano CacheManager")
+            logging.info("CacheManager initialized")
             
             self.state = self.initialize_state()
-            logging.info("Zainicjalizowano stan")
+            logging.info("State initialized")
             
         except Exception as e:
-            logging.error(f"Błąd podczas inicjalizacji: {str(e)}")
+            logging.error(f"Initialization error: {str(e)}")
             raise
 
     def initialize_state(self):
@@ -292,70 +325,35 @@ class BalancerStrategy:
 
     def calculate_position_sizes(self):
         """Calculate and adjust position sizes based on allocation config"""
-        logging.info("Checking positions...")
         account_info = self.binance.fetch_account_info()
         if not account_info:
-            logging.error("Failed to fetch account information")
             return
         
         equity = float(account_info["totalWalletBalance"])
-        min_notional = 100
         
-        if equity < min_notional:
-            logging.error(f"Insufficient capital. Minimum required: ${min_notional}, available: ${equity:.2f}")
-            return
-        
-        logging.info(f"Current balance: ${equity:.2f}")
-        
-        current_positions = {
-            pos["symbol"]: {
-                "size": float(pos["positionAmt"]),
-                "notional": float(pos["notional"]),
-                "unrealizedProfit": float(pos["unrealizedProfit"])
-            }
-            for pos in account_info["positions"]
-            if float(pos["positionAmt"]) != 0
-        }
-        
-        logging.info(f"Found {len(current_positions)} active positions")
-        
-        if not current_positions:
-            logging.info("No active positions. Initializing allocations according to config...")
-            for symbol, allocation in self.config["ALLOCATION"].items():
-                try:
-                    target_notional = equity * allocation
-                    current_price = float(self.binance.get_symbol_price(symbol))
-                    target_size = target_notional / current_price
-                    
-                    logging.info(f"Opening position for {symbol}:")
-                    logging.debug(f"Allocation: {allocation*100}%")
-                    logging.debug(f"Amount: ${target_notional:.2f}")
-                    logging.debug(f"Size: {target_size:.6f}")
-                    
-                    order = self.binance.create_order(
-                        symbol=symbol,
-                        side="BUY",
-                        quantity=target_size,
-                        order_type="MARKET"
-                    )
-                    logging.info(f"Order executed: {order['orderId']}")
-                    
-                except Exception as e:
-                    logging.error(f"Error opening position for {symbol}: {str(e)}")
-        else:
-            logging.info("Checking existing positions...")
-            for symbol, allocation in self.config["ALLOCATION"].items():
-                target_notional = equity * allocation
-                current_pos = current_positions.get(symbol, {
-                    "notional": 0, 
-                    "unrealizedProfit": 0, 
-                    "size": 0
-                })
-                
-                logging.debug(f"Checking {symbol}:")
-                logging.debug(f"Target value: ${target_notional:.2f}")
-                logging.debug(f"Current value: ${current_pos['notional']:.2f}")
-                logging.debug(f"Unrealized PnL: ${current_pos['unrealizedProfit']:.2f}")
+        for symbol, allocation in self.config["ALLOCATION"].items():
+            allocated_amount = equity * allocation
+            
+            # Get symbol-specific minimum notional
+            symbol_info = self.state["symbol_info"].get(symbol, {})
+            if not symbol_info:
+                logging.error(f"No symbol info for {symbol}")
+                continue
+            
+            filters = {f["filterType"]: f for f in symbol_info.get("filters", [])}
+            min_notional = float(filters.get("MIN_NOTIONAL", {}).get("notional", 5))  # Default to 5 if not found
+            
+            if allocated_amount < min_notional:
+                logging.error(f"Allocated amount for {symbol} (${allocated_amount:.2f}) is below minimum notional (${min_notional})")
+                continue
+            
+            # Calculate and place order if above minimum notional
+            try:
+                price = float(self.binance.get_symbol_price(symbol))
+                quantity = allocated_amount / price
+                self.binance.create_order(symbol, "BUY", quantity)
+            except Exception as e:
+                logging.error(f"Error opening position for {symbol}: {e}")
 
     def place_hedge_position(self, symbol, position, equity):
         """Place hedge order for a position"""
@@ -471,10 +469,10 @@ class BalancerStrategy:
 
     def display_status(self):
         """Display current strategy status"""
-        print("\nPobieram aktualny stan konta...")
+        print("\nFetching current account status...")
         account_info = self.binance.fetch_account_info()
         if not account_info:
-            print("Nie udało się pobrać informacji o koncie!")
+            print("Failed to fetch account information!")
             return
         
         equity = float(account_info["totalWalletBalance"])
@@ -485,36 +483,36 @@ class BalancerStrategy:
         }
         
         print(f"\n{'='*50}")
-        print(f"Stan konta: ${equity:.2f}")
-        print(f"Liczba aktywnych pozycji: {len(positions)}")
+        print(f"Account balance: ${equity:.2f}")
+        print(f"Active positions: {len(positions)}")
         print(f"{'='*50}\n")
         
         if positions:
-            print("Aktywne pozycje:")
+            print("Active positions:")
             for symbol, pos in positions.items():
                 size = float(pos["positionAmt"])
                 upnl = float(pos["unrealizedProfit"])
                 print(f"{symbol}: {size:.4f} (PnL: ${upnl:.2f})")
         else:
-            print("Brak aktywnych pozycji")
+            print("No active positions")
 
     def run(self):
         """Main strategy loop"""
-        print("Rozpoczynam główną pętlę strategii...")
+        print("Starting main strategy loop...")
         try:
-            print("Aktualizuję informacje o symbolach...")
+            print("Updating symbol information...")
             self.update_symbol_info(self.state)
             
-            print("Obliczam rozmiary pozycji...")
+            print("Calculating position sizes...")
             self.calculate_position_sizes()
             
-            print("Wyświetlam status...")
+            print("Displaying status...")
             self.display_status()
             
-            print("Zapisuję stan...")
+            print("Saving state...")
             self.cache.save(self.state)
             
-            print("Pierwszy cykl zakończony, przechodzę do pętli głównej...")
+            print("First cycle completed, entering main loop...")
             
             while True:
                 try:
@@ -522,15 +520,16 @@ class BalancerStrategy:
                     self.calculate_position_sizes()
                     self.display_status()
                     self.cache.save(self.state)
-                    print(f"Czekam {self.config['UPDATE_INTERVAL']} sekund...")
+                    print(f"Waiting {self.config['UPDATE_INTERVAL']} seconds...")
                     time.sleep(self.config["UPDATE_INTERVAL"])
                 except Exception as e:
-                    print(f"Błąd w głównej pętli: {str(e)}")
-                    logging.error(f"Błąd w głównej pętli: {str(e)}", exc_info=True)
+                    print(f"Error in main loop: {str(e)}")
+                    print(f"Critical error in main loop: {str(e)}")
+                    logging.error(f"Critical error in main loop: {str(e)}", exc_info=True)
                     time.sleep(5)
         except Exception as e:
-            print(f"Błąd krytyczny w run(): {str(e)}")
-            logging.error(f"Błąd krytyczny w run(): {str(e)}", exc_info=True)
+            print(f"Critical error in run(): {str(e)}")
+            logging.error(f"Critical error in run(): {str(e)}", exc_info=True)
             raise
 
 def install_requirements():
@@ -550,14 +549,14 @@ def install_requirements():
                 sys.exit(1)
 
 if __name__ == "__main__":
-    print("Rozpoczynam inicjalizację...")
+    print("Starting initialization...")
     install_requirements()
-    print("Pakiety zainstalowane, tworzę instancję BalancerStrategy...")
+    print("Packages installed, creating BalancerStrategy instance...")
     try:
         strategy = BalancerStrategy()
-        print("Instancja utworzona, uruchamiam strategię...")
+        print("Instance created, starting strategy...")
         strategy.run()
     except Exception as e:
-        print(f"Błąd krytyczny: {str(e)}")
-        logging.error(f"Błąd krytyczny: {str(e)}", exc_info=True)
+        print(f"Critical error: {str(e)}")
+        logging.error(f"Critical error: {str(e)}", exc_info=True)
         sys.exit(1) 
